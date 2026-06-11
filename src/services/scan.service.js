@@ -205,14 +205,18 @@ export async function getScanTableView(filters = {}) {
 }
 
 export async function getProductHistoryView(productName, filters = {}) {
-  const normalizedProduct = normalizeProductClass(productName);
+  const requestedProduct = normalizeRequestedProduct(productName);
+  const isUnknownProduct = requestedProduct === 'unknown';
+  const normalizedProduct = isUnknownProduct ? 'unknown' : normalizeProductClass(requestedProduct);
 
-  if (!normalizedProduct || !SUPPORTED_PRODUCTS.has(normalizedProduct)) {
+  if (!isUnknownProduct && (!normalizedProduct || !SUPPORTED_PRODUCTS.has(normalizedProduct))) {
     throw new AppError('Invalid product', 400);
   }
 
   const { page = 1, limit = 10, vendorId, fromDate, toDate } = filters;
-  const query = buildScanQuery({ vendorId, product: normalizedProduct, fromDate, toDate });
+  const query = isUnknownProduct
+    ? buildScanQuery({ vendorId, matched: false, fromDate, toDate })
+    : buildScanQuery({ vendorId, product: normalizedProduct, fromDate, toDate });
   const skip = (page - 1) * limit;
 
   const [scans, total] = await Promise.all([
@@ -221,16 +225,21 @@ export async function getProductHistoryView(productName, filters = {}) {
   ]);
 
   const allMatchingScans = await ScanHistory.find(query).sort({ scannedAt: -1, createdAt: -1 });
-  const totalCount = allMatchingScans.reduce((sum, scan) => {
-    const product = (scan.products || []).find((item) => item.name === normalizedProduct);
-    return sum + Number(product?.count || 0);
-  }, 0);
+  const totalCount = isUnknownProduct
+    ? 0
+    : allMatchingScans.reduce((sum, scan) => {
+        const product = (scan.products || []).find((item) => item.name === normalizedProduct);
+        return sum + Number(product?.count || 0);
+      }, 0);
 
   return {
     product: normalizedProduct,
-    displayName: getDisplayName(normalizedProduct),
+    displayName: isUnknownProduct ? 'Unknown Product' : getDisplayName(normalizedProduct),
     totalCount,
-    data: scans.map((scan, index) => formatProductHistoryRow(scan, normalizedProduct, skip + index)),
+    scanCount: allMatchingScans.length,
+    data: scans.map((scan, index) =>
+      formatProductHistoryRow(scan, normalizedProduct, skip + index, isUnknownProduct)
+    ),
     pagination: {
       page,
       limit,
@@ -442,6 +451,25 @@ function formatProductHistoryRow(scan, normalizedProduct, index) {
     vendorId: scan.vendorId || '',
     scannedAt: scannedAt.toISOString()
   };
+}
+
+function normalizeRequestedProduct(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (
+    normalized === 'unknown' ||
+    normalized === 'unknown product' ||
+    normalized === 'unmatched' ||
+    normalized === 'no matched product found'
+  ) {
+    return 'unknown';
+  }
+
+  return normalized;
 }
 
 function normalizedFallbackName(value) {
